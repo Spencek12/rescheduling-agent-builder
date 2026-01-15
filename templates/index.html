@@ -132,9 +132,17 @@
             try {
                 const response = await fetch('/phone-numbers');
                 if (!response.ok) {
-                    throw new Error('Failed to fetch phone numbers');
+                    throw new Error(`Failed to fetch phone numbers: ${response.status}`);
                 }
-                phoneNumbers = await response.json();
+                const data = await response.json();
+
+                // Check if response is an error object
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                // Ensure data is an array
+                phoneNumbers = Array.isArray(data) ? data : [];
 
                 select.innerHTML = '';
 

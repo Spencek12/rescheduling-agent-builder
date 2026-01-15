@@ -55,7 +55,6 @@ def setup_environment():
         print("   Create config.env with your API credentials:")
         print("   RETELL_API_KEY=your_key")
         print("   RETELL_AGENT_ID=your_agent_id")
-        print("   FROM_NUMBER=+15551234567  (must start with +)")
         print()
         input("Press Enter to exit...")
         sys.exit(1)
@@ -63,34 +62,18 @@ def setup_environment():
 def validate_config():
     """Validate required environment variables"""
     errors = []
-    
+
     # Check required variables exist
     if not os.environ.get('RETELL_API_KEY'):
         errors.append("❌ RETELL_API_KEY not set in config.env")
     elif os.environ.get('RETELL_API_KEY') == 'your_retell_api_key_here':
         errors.append("❌ RETELL_API_KEY still has placeholder value")
-    
+
     if not os.environ.get('RETELL_AGENT_ID'):
         errors.append("❌ RETELL_AGENT_ID not set in config.env")
     elif os.environ.get('RETELL_AGENT_ID') == 'your_agent_id_here':
         errors.append("❌ RETELL_AGENT_ID still has placeholder value")
-    
-    from_number = os.environ.get('FROM_NUMBER', '')
-    if not from_number:
-        errors.append("❌ FROM_NUMBER not set in config.env")
-    elif not from_number.startswith('+'):
-        errors.append(f"❌ FROM_NUMBER must start with + (E.164 format)")
-        errors.append(f"   Current value: {from_number}")
-        errors.append(f"   Should be like: +15551234567")
-    elif ' ' in from_number or '-' in from_number or '(' in from_number:
-        errors.append(f"❌ FROM_NUMBER cannot contain spaces, dashes, or parentheses")
-        errors.append(f"   Current value: {from_number}")
-        errors.append(f"   Should be like: +15551234567")
-    elif from_number == '+1234567890' or from_number == '+15551234567':
-        errors.append("⚠️  FROM_NUMBER appears to be a placeholder/example number")
-        errors.append(f"   Current value: {from_number}")
-        errors.append(f"   Replace with your actual Retell phone number")
-    
+
     if errors:
         print()
         print("="*60)
@@ -104,9 +87,8 @@ def validate_config():
         print()
         input("Press Enter to exit...")
         sys.exit(1)
-    
+
     print("✅ Configuration validated")
-    print(f"   Using FROM_NUMBER: {os.environ.get('FROM_NUMBER')}")
     print(f"   Using AGENT_ID: {os.environ.get('RETELL_AGENT_ID')}")
 
 
