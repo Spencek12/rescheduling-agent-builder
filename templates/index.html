@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Rescheduling Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="content-card header-card">
+            <div class="header-content">
+                <div class="header-icon-box">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+                </div>
+                <div>
+                    <h1>AI Rescheduling Agent</h1>
+                </div>
+            </div>
+            <div class="system-indicator">
+                <span class="dot" id="statusDot"></span>
+                <span id="systemStatusHeader">System Ready</span>
+            </div>
+        </header>
+
+        <div class="dashboard">
+            <div class="status-grid">
+                <div class="content-card status-item">
+                    <span class="label">People Loaded</span>
+                    <span class="value" id="peopleCount">0</span>
+                </div>
+                <div class="content-card status-item">
+                    <span class="label">Appointments</span>
+                    <span class="value" id="appointmentsCount">0</span>
+                </div>
+                <div class="content-card status-item">
+                    <span class="label">Calls Done</span>
+                    <span class="value" id="resultsCount">0</span>
+                </div>
+                <div class="content-card status-item">
+                    <span class="label">Current Status</span>
+                    <span class="value text-sm" id="systemStatus">Ready</span>
+                </div>
+            </div>
+
+            <div class="main-grid">
+                <div class="left-col">
+                    <div class="content-card upload-section">
+                        <h2>Data Management</h2>
+                        
+                        <div class="upload-row">
+                            <div class="file-drop-zone" id="peopleDropZone">
+                                <h3>People Data</h3>
+                                <p class="tiny-text">.csv, .xlsx, .xls</p>
+                                <div class="file-input-wrapper">
+                                    <input type="file" id="peopleFile" accept=".csv,.xlsx,.xls" class="file-input-standard">
+                                    <label for="peopleFile" class="file-input-label">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
+                                        </svg>
+                                        Choose File or Drop Here
+                                    </label>
+                                </div>
+                                <div id="peopleStatus" class="upload-status"></div>
+                            </div>
+
+                            <div class="file-drop-zone" id="appointmentsDropZone">
+                                <h3>Schedule Data</h3>
+                                <p class="tiny-text">.csv, .xlsx, .xls</p>
+                                <div class="file-input-wrapper">
+                                    <input type="file" id="appointmentsFile" accept=".csv,.xlsx,.xls" class="file-input-standard">
+                                    <label for="appointmentsFile" class="file-input-label">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
+                                        </svg>
+                                        Choose File or Drop Here
+                                    </label>
+                                </div>
+                                <div id="appointmentsStatus" class="upload-status"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="content-card control-bar">
+                        <button id="startButton" onclick="startCalling()" class="btn btn-primary btn-lg" disabled>
+                            Start Calling
+                        </button>
+                        <button id="stopButton" onclick="stopCalling()" class="btn btn-danger btn-lg hidden">
+                            Stop Calling
+                        </button>
+                        <button id="downloadButton" onclick="downloadResults()" class="btn btn-outline" disabled>
+                            Export Results
+                        </button>
+                    </div>
+                </div>
+
+                <div class="right-col">
+                    <div class="content-card log-panel">
+                        <div class="log-header">
+                            <h2>Live Terminal</h2>
+                            <div class="live-dot"></div>
+                        </div>
+                        <div id="logContainer" class="log-container">
+                            <div class="log-placeholder">
+                                Awaiting system initialization...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isCalling = false;
+        let currentReader = null;
+
+        // Drag and drop handlers
+        function setupDragAndDrop(dropZoneId, fileInputId, uploadFunction) {
+            const dropZone = document.getElementById(dropZoneId);
+            const fileInput = document.getElementById(fileInputId);
+            
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, preventDefaults, false);
+            });
+            
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => {
+                    dropZone.classList.add('drag-over');
+                }, false);
+            });
+            
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => {
+                    dropZone.classList.remove('drag-over');
+                }, false);
+            });
+            
+            dropZone.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                if (files.length > 0) {
+                    fileInput.files = files;
+                    uploadFunction();
+                }
+            }, false);
+            
+            // Auto-upload on file selection
+            fileInput.addEventListener('change', uploadFunction);
+        }
+
+        async function updateStatus() {
+            try {
+                const response = await fetch('/status');
+                const data = await response.json();
+                
+                document.getElementById('peopleCount').textContent = data.people_count;
+                document.getElementById('appointmentsCount').textContent = data.appointments_count;
+                document.getElementById('resultsCount').textContent = data.results_count;
+                
+                const statusText = data.is_calling ? 'Active' : 'Ready';
+                document.getElementById('systemStatus').textContent = statusText;
+                document.getElementById('systemStatusHeader').textContent = data.is_calling ? 'System Busy' : 'System Ready';
+                
+                const dot = document.getElementById('statusDot');
+                if(data.is_calling) {
+                    dot.style.background = '#10b981';
+                    dot.style.boxShadow = '0 0 10px #10b981';
+                } else {
+                    dot.style.background = '#cbd5e1';
+                    dot.style.boxShadow = 'none';
+                }
+                
+                const startBtn = document.getElementById('startButton');
+                if (data.people_count > 0 && data.appointments_count > 0 && !data.is_calling) {
+                    startBtn.disabled = false;
+                } else {
+                    startBtn.disabled = true;
+                }
+
+                const downloadBtn = document.getElementById('downloadButton');
+                downloadBtn.disabled = data.results_count === 0;
+                
+            } catch (error) {
+                console.error('Error updating status:', error);
+            }
+        }
+
+        async function uploadPeople() {
+            const fileInput = document.getElementById('peopleFile');
+            const file = fileInput.files[0];
+            const statusDiv = document.getElementById('peopleStatus');
+            
+            if (!file) {
+                statusDiv.innerHTML = '<span class="error">Select a file first</span>';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            statusDiv.innerHTML = '<span class="loading">Uploading...</span>';
+            
+            try {
+                const response = await fetch('/upload-people', { method: 'POST', body: formData });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    statusDiv.innerHTML = `<span class="success">✓ ${data.count} Loaded</span>`;
+                    updateStatus();
+                } else {
+                    statusDiv.innerHTML = `<span class="error">${data.error}</span>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<span class="error">${error.message}</span>`;
+            }
+        }
+
+        async function uploadAppointments() {
+            const fileInput = document.getElementById('appointmentsFile');
+            const file = fileInput.files[0];
+            const statusDiv = document.getElementById('appointmentsStatus');
+            
+            if (!file) {
+                statusDiv.innerHTML = '<span class="error">Select a file first</span>';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            statusDiv.innerHTML = '<span class="loading">Uploading...</span>';
+            
+            try {
+                const response = await fetch('/upload-appointments', { method: 'POST', body: formData });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    statusDiv.innerHTML = `<span class="success">✓ ${data.count} Loaded</span>`;
+                    updateStatus();
+                } else {
+                    statusDiv.innerHTML = `<span class="error">${data.error}</span>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<span class="error">${error.message}</span>`;
+            }
+        }
+
+        function addLogEntry(type, message, data = {}) {
+            const logContainer = document.getElementById('logContainer');
+            if (logContainer.querySelector('.log-placeholder')) {
+                logContainer.innerHTML = '';
+            }
+            
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            
+            const timestamp = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit' });
+            
+            let content = `<span class="timestamp">${timestamp}</span> `;
+            
+            switch(type) {
+                case 'calling':
+                    content += `Calling: <strong>${data.person}</strong> <span class="sub-info">(${data.phone})</span>`;
+                    break;
+                case 'call_created':
+                    content += `Call initiated: <span class="id-tag">${data.call_id.substring(0,8)}...</span>`;
+                    break;
+                case 'call_complete':
+                    const outcome = data.result['Appointment Rescheduled'] ? '✅ Rescheduled' : '❌ Failed';
+                    content += `Finished: <strong>${data.result['Patient Name']}</strong> — ${outcome}`;
+                    break;
+                case 'info':
+                    content += `${data.person ? '<strong>' + data.person + '</strong>: ' : ''}${message}`;
+                    break;
+                case 'error':
+                    content += `Error (${data.person}): ${data.error}`;
+                    break;
+                case 'complete':
+                    content += `<strong>BATCH COMPLETE:</strong> ${message}`;
+                    break;
+                case 'stopped':
+                    content += `<strong>CAMPAIGN STOPPED:</strong> ${message}`;
+                    break;
+                default:
+                    content += message;
+            }
+            
+            entry.innerHTML = content;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        async function startCalling() {
+            if (isCalling) return;
+            isCalling = true;
+            
+            document.getElementById('startButton').classList.add('hidden');
+            document.getElementById('stopButton').classList.remove('hidden');
+            document.getElementById('logContainer').innerHTML = '';
+            
+            try {
+                const response = await fetch('/start-calling', { method: 'POST' });
+                currentReader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { done, value } = await currentReader.read();
+                    if (done) break;
+                    const text = decoder.decode(value);
+                    const lines = text.split('\n').filter(line => line.trim());
+                    
+                    for (const line of lines) {
+                        try {
+                            const event = JSON.parse(line);
+                            switch(event.type) {
+                                case 'calling': addLogEntry('calling', '', event); break;
+                                case 'call_created': addLogEntry('call_created', '', event); break;
+                                case 'call_complete': addLogEntry('call_complete', '', event); updateStatus(); break;
+                                case 'info': addLogEntry('info', event.message, event); updateStatus(); break;
+                                case 'error': addLogEntry('error', '', event); break;
+                                case 'complete': 
+                                    addLogEntry('complete', event.message); 
+                                    setTimeout(() => { downloadResults(); }, 1000); 
+                                    break;
+                            }
+                        } catch (e) { console.error('Error parsing event:', e); }
+                    }
+                }
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    addLogEntry('error', `System error: ${error.message}`);
+                }
+            } finally {
+                isCalling = false;
+                currentReader = null;
+                document.getElementById('startButton').classList.remove('hidden');
+                document.getElementById('stopButton').classList.add('hidden');
+                updateStatus();
+            }
+        }
+
+        function stopCalling() {
+            if (currentReader) {
+                currentReader.cancel();
+                currentReader = null;
+            }
+            isCalling = false;
+            document.getElementById('startButton').classList.remove('hidden');
+            document.getElementById('stopButton').classList.add('hidden');
+            addLogEntry('stopped', 'Campaign stopped by user');
+            updateStatus();
+        }
+
+        function downloadResults() { 
+            window.location.href = '/download-results'; 
+        }
+
+        window.addEventListener('load', () => {
+            setupDragAndDrop('peopleDropZone', 'peopleFile', uploadPeople);
+            setupDragAndDrop('appointmentsDropZone', 'appointmentsFile', uploadAppointments);
+            updateStatus();
+            setInterval(updateStatus, 3000);
+        });
+    </script>
+</body>
+</html>
