@@ -34,15 +34,15 @@
                 </div>
                 <div class="content-card status-item">
                     <span class="label">Appointments</span>
-                    <span class="value" id="appointmentsCount">0</span>
+                    <span class="value" id="originalAppointmentsCount">0</span>
                 </div>
                 <div class="content-card status-item">
                     <span class="label">Calls Done</span>
                     <span class="value" id="resultsCount">0</span>
                 </div>
                 <div class="content-card status-item">
-                    <span class="label">Current Status</span>
-                    <span class="value text-sm" id="systemStatus">Ready</span>
+                    <span class="label">Rescheduled</span>
+                    <span class="value rescheduled-value" id="rescheduledCount">0</span>
                 </div>
             </div>
 
@@ -68,7 +68,7 @@
                             </div>
 
                             <div class="file-drop-zone" id="appointmentsDropZone">
-                                <h3>Schedule Data</h3>
+                                <h3>Available Appointments</h3>
                                 <p class="tiny-text">.csv, .xlsx, .xls</p>
                                 <div class="file-input-wrapper">
                                     <input type="file" id="appointmentsFile" accept=".csv,.xlsx,.xls" class="file-input-standard">
@@ -85,6 +85,12 @@
                     </div>
 
                     <div class="content-card control-bar">
+                        <div class="phone-select-wrapper">
+                            <label for="fromNumberSelect" class="phone-select-label">From Number</label>
+                            <select id="fromNumberSelect" class="phone-select">
+                                <option value="">Loading numbers...</option>
+                            </select>
+                        </div>
                         <button id="startButton" onclick="startCalling()" class="btn btn-primary btn-lg" disabled>
                             Start Calling
                         </button>
@@ -117,6 +123,55 @@
     <script>
         let isCalling = false;
         let currentReader = null;
+        let phoneNumbers = [];
+        let pendingCallId = null;
+        let pendingPersonName = null;
+
+        async function fetchPhoneNumbers() {
+            const select = document.getElementById('fromNumberSelect');
+            try {
+                const response = await fetch('/phone-numbers');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch phone numbers');
+                }
+                phoneNumbers = await response.json();
+
+                select.innerHTML = '';
+
+                if (phoneNumbers.length === 0) {
+                    select.innerHTML = '<option value="">No numbers available</option>';
+                    return;
+                }
+
+                // Add a placeholder option
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = 'Select a number...';
+                select.appendChild(placeholder);
+
+                // Add phone numbers
+                phoneNumbers.forEach(num => {
+                    const option = document.createElement('option');
+                    option.value = num.phone_number;
+                    // Display nickname if available, otherwise use pretty format
+                    const displayName = num.nickname
+                        ? `${num.nickname} (${num.phone_number_pretty})`
+                        : num.phone_number_pretty;
+                    option.textContent = displayName;
+                    select.appendChild(option);
+                });
+
+                // Auto-select if only one number
+                if (phoneNumbers.length === 1) {
+                    select.value = phoneNumbers[0].phone_number;
+                }
+
+                updateStatus();
+            } catch (error) {
+                console.error('Error fetching phone numbers:', error);
+                select.innerHTML = '<option value="">Error loading numbers</option>';
+            }
+        }
 
         // Drag and drop handlers
         function setupDragAndDrop(dropZoneId, fileInputId, uploadFunction) {
@@ -161,15 +216,15 @@
             try {
                 const response = await fetch('/status');
                 const data = await response.json();
-                
+
                 document.getElementById('peopleCount').textContent = data.people_count;
-                document.getElementById('appointmentsCount').textContent = data.appointments_count;
+                document.getElementById('originalAppointmentsCount').textContent = data.original_appointments_count;
+                document.getElementById('rescheduledCount').textContent = data.rescheduled_count;
                 document.getElementById('resultsCount').textContent = data.results_count;
-                
-                const statusText = data.is_calling ? 'Active' : 'Ready';
-                document.getElementById('systemStatus').textContent = statusText;
-                document.getElementById('systemStatusHeader').textContent = data.is_calling ? 'System Busy' : 'System Ready';
-                
+
+                // Update header status with detailed status
+                document.getElementById('systemStatusHeader').textContent = data.current_status;
+
                 const dot = document.getElementById('statusDot');
                 if(data.is_calling) {
                     dot.style.background = '#10b981';
@@ -178,9 +233,10 @@
                     dot.style.background = '#cbd5e1';
                     dot.style.boxShadow = 'none';
                 }
-                
+
                 const startBtn = document.getElementById('startButton');
-                if (data.people_count > 0 && data.appointments_count > 0 && !data.is_calling) {
+                const selectedNumber = document.getElementById('fromNumberSelect').value;
+                if (data.people_count > 0 && data.appointments_count > 0 && !data.is_calling && selectedNumber) {
                     startBtn.disabled = false;
                 } else {
                     startBtn.disabled = true;
@@ -188,7 +244,7 @@
 
                 const downloadBtn = document.getElementById('downloadButton');
                 downloadBtn.disabled = data.results_count === 0;
-                
+
             } catch (error) {
                 console.error('Error updating status:', error);
             }
@@ -301,14 +357,28 @@
 
         async function startCalling() {
             if (isCalling) return;
+
+            const fromNumber = document.getElementById('fromNumberSelect').value;
+            if (!fromNumber) {
+                alert('Please select a phone number first.');
+                return;
+            }
+
             isCalling = true;
-            
+            pendingCallId = null;
+            pendingPersonName = null;
+
             document.getElementById('startButton').classList.add('hidden');
             document.getElementById('stopButton').classList.remove('hidden');
+            document.getElementById('fromNumberSelect').disabled = true;
             document.getElementById('logContainer').innerHTML = '';
-            
+
             try {
-                const response = await fetch('/start-calling', { method: 'POST' });
+                const response = await fetch('/start-calling', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ from_number: fromNumber })
+                });
                 currentReader = response.body.getReader();
                 const decoder = new TextDecoder();
                 
@@ -322,14 +392,29 @@
                         try {
                             const event = JSON.parse(line);
                             switch(event.type) {
-                                case 'calling': addLogEntry('calling', '', event); break;
-                                case 'call_created': addLogEntry('call_created', '', event); break;
-                                case 'call_complete': addLogEntry('call_complete', '', event); updateStatus(); break;
+                                case 'calling':
+                                    pendingPersonName = event.person;
+                                    addLogEntry('calling', '', event);
+                                    break;
+                                case 'call_created':
+                                    pendingCallId = event.call_id;
+                                    addLogEntry('call_created', '', event);
+                                    break;
+                                case 'call_complete':
+                                    pendingCallId = null;
+                                    pendingPersonName = null;
+                                    addLogEntry('call_complete', '', event);
+                                    updateStatus();
+                                    break;
                                 case 'info': addLogEntry('info', event.message, event); updateStatus(); break;
-                                case 'error': addLogEntry('error', '', event); break;
-                                case 'complete': 
-                                    addLogEntry('complete', event.message); 
-                                    setTimeout(() => { downloadResults(); }, 1000); 
+                                case 'error':
+                                    pendingCallId = null;
+                                    pendingPersonName = null;
+                                    addLogEntry('error', '', event);
+                                    break;
+                                case 'complete':
+                                    addLogEntry('complete', event.message);
+                                    setTimeout(() => { downloadResults(); }, 1000);
                                     break;
                             }
                         } catch (e) { console.error('Error parsing event:', e); }
@@ -344,11 +429,12 @@
                 currentReader = null;
                 document.getElementById('startButton').classList.remove('hidden');
                 document.getElementById('stopButton').classList.add('hidden');
+                document.getElementById('fromNumberSelect').disabled = false;
                 updateStatus();
             }
         }
 
-        function stopCalling() {
+        async function stopCalling() {
             if (currentReader) {
                 currentReader.cancel();
                 currentReader = null;
@@ -356,8 +442,45 @@
             isCalling = false;
             document.getElementById('startButton').classList.remove('hidden');
             document.getElementById('stopButton').classList.add('hidden');
+            document.getElementById('fromNumberSelect').disabled = false;
             addLogEntry('stopped', 'Campaign stopped by user');
+
+            // If there's a pending call, fetch its result
+            if (pendingCallId) {
+                addLogEntry('info', `Fetching result for in-progress call...`, { person: pendingPersonName || 'Unknown' });
+
+                try {
+                    const response = await fetch(`/get-call-result/${pendingCallId}`);
+                    const data = await response.json();
+
+                    if (data.success && data.result) {
+                        // Update patient name if we have it
+                        if (pendingPersonName) {
+                            data.result['Patient Name'] = pendingPersonName;
+                        }
+                        addLogEntry('call_complete', '', { result: data.result });
+                    } else {
+                        addLogEntry('info', `Could not retrieve call result: ${data.error || 'Unknown error'}`, {});
+                    }
+                } catch (error) {
+                    addLogEntry('error', '', { person: pendingPersonName || 'Unknown', error: `Failed to fetch call result: ${error.message}` });
+                }
+
+                pendingCallId = null;
+                pendingPersonName = null;
+            }
+
             updateStatus();
+
+            // Download results if any calls were made
+            setTimeout(async () => {
+                const statusResponse = await fetch('/status');
+                const statusData = await statusResponse.json();
+                if (statusData.results_count > 0) {
+                    addLogEntry('info', 'Downloading results...', {});
+                    downloadResults();
+                }
+            }, 500);
         }
 
         function downloadResults() { 
@@ -367,8 +490,12 @@
         window.addEventListener('load', () => {
             setupDragAndDrop('peopleDropZone', 'peopleFile', uploadPeople);
             setupDragAndDrop('appointmentsDropZone', 'appointmentsFile', uploadAppointments);
+            fetchPhoneNumbers();
             updateStatus();
             setInterval(updateStatus, 3000);
+
+            // Update button state when phone number selection changes
+            document.getElementById('fromNumberSelect').addEventListener('change', updateStatus);
         });
     </script>
 </body>

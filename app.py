@@ -2,7 +2,7 @@ import os
 import time
 import json
 import pandas as pd
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
@@ -18,7 +18,6 @@ CORS(app)
 # Configuration
 RETELL_API_KEY = os.getenv('RETELL_API_KEY')
 RETELL_AGENT_ID = os.getenv('RETELL_AGENT_ID')
-FROM_NUMBER = os.getenv('FROM_NUMBER')
 RETELL_API_BASE = "https://api.retellai.com/v2"
 
 # Global state
@@ -28,6 +27,9 @@ call_results = []
 people_schema = {}
 appointments_schema = {}
 is_calling = False
+current_status = "Ready"
+original_appointments_count = 0
+rescheduled_count = 0
 
 
 def infer_schema_from_df(df, source_name):
@@ -61,7 +63,7 @@ def validate_data_against_schema(df, schema, data_type):
     return True, "Schema validated successfully"
 
 
-def create_phone_call(person_data, available_appointments):
+def create_phone_call(person_data, available_appointments, from_number):
     """Create a phone call via Retell AI API"""
     
     # Prepare dynamic variables
@@ -116,7 +118,7 @@ def create_phone_call(person_data, available_appointments):
     
     # Create call payload
     payload = {
-        "from_number": FROM_NUMBER,
+        "from_number": from_number,
         "to_number": phone_number,
         "override_agent_id": RETELL_AGENT_ID,
         "retell_llm_dynamic_variables": dynamic_vars
@@ -169,7 +171,7 @@ def poll_call_until_ended(call_id, max_wait_seconds=600, poll_interval=5):
             if status in ['ended', 'error']:
                 # Wait additional time for post-call analysis to complete
                 # Analysis may take a few seconds after call ends
-                time.sleep(10)
+                time.sleep(3)
                 
                 # Fetch again to get complete analysis
                 final_call_data = get_call_status(call_id)
@@ -236,30 +238,32 @@ def extract_appointment_from_analysis(call_data):
 
 def find_and_remove_appointment(new_date):
     """Find and remove the matching appointment from available slots"""
-    global appointments_data
-    
+    global appointments_data, rescheduled_count
+
     if not new_date or not appointments_data:
         return False
-    
+
     # Try to parse and match the date
     for i, apt in enumerate(appointments_data):
         apt_date = apt.get('date', '')
-        
+
         # Direct match
         if str(apt_date) == str(new_date):
             appointments_data.pop(i)
+            rescheduled_count += 1
             return True
-        
+
         # Try fuzzy matching
         try:
             parsed_new = pd.to_datetime(new_date)
             parsed_apt = pd.to_datetime(apt_date)
             if parsed_new.date() == parsed_apt.date():
                 appointments_data.pop(i)
+                rescheduled_count += 1
                 return True
         except:
             continue
-    
+
     return False
 
 
@@ -313,14 +317,14 @@ def upload_people():
 @app.route('/upload-appointments', methods=['POST'])
 def upload_appointments():
     """Upload available appointments"""
-    global appointments_data, appointments_schema
-    
+    global appointments_data, appointments_schema, original_appointments_count, rescheduled_count
+
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
-        
+
         file = request.files['file']
-        
+
         # Read file based on extension
         if file.filename.endswith('.csv'):
             df = pd.read_csv(file)
@@ -328,7 +332,7 @@ def upload_appointments():
             df = pd.read_excel(file)
         else:
             return jsonify({'error': 'Unsupported file format. Use CSV or Excel'}), 400
-        
+
         # Infer schema if this is the first upload
         if not appointments_schema:
             appointments_schema = infer_schema_from_df(df, file.filename)
@@ -337,10 +341,14 @@ def upload_appointments():
             valid, msg = validate_data_against_schema(df, appointments_schema, 'Appointments')
             if not valid:
                 return jsonify({'error': msg}), 400
-        
+
         # Convert to list of dicts
         appointments_data = df.to_dict('records')
-        
+
+        # Track original count and reset rescheduled count
+        original_appointments_count = len(appointments_data)
+        rescheduled_count = 0
+
         return jsonify({
             'success': True,
             'count': len(appointments_data),
@@ -355,110 +363,79 @@ def upload_appointments():
 def start_calling():
     """Start the sequential calling process"""
     global is_calling, call_results, people_data, appointments_data
-    
+
+    # Get from_number from request (must be done BEFORE generator)
+    data = request.get_json() or {}
+    from_number = data.get('from_number')
+
+    if not from_number:
+        return jsonify({'error': 'No from_number provided. Please select a phone number.'}), 400
+
     if is_calling:
         return jsonify({'error': 'Calling process already in progress'}), 400
-    
+
     if not people_data:
         return jsonify({'error': 'No people data loaded'}), 400
-    
+
     if not appointments_data:
         return jsonify({'error': 'No appointments data loaded'}), 400
-    
-    is_calling = True
-    call_results = []
-    
-    try:
-        # Process each person sequentially
-        for person in people_data:
-            if not appointments_data:
-                yield json.dumps({
-                    'type': 'complete',
-                    'message': 'No more appointments available'
-                }) + '\n'
-                break
-            
-            # Get person's current appointment date
-            current_apt_date = person.get('Extracted_Appointment_Date', '')
-            
-            # Filter appointments to only include those BEFORE current appointment
-            filtered_appointments = []
-            if current_apt_date:
-                try:
-                    current_date = pd.to_datetime(current_apt_date)
-                    for apt in appointments_data:
-                        apt_date_str = apt.get('date', '')
-                        try:
-                            apt_date = pd.to_datetime(apt_date_str)
-                            # Only include if appointment is BEFORE current appointment
-                            if apt_date < current_date:
-                                filtered_appointments.append(apt)
-                        except:
-                            # If date parsing fails, skip this appointment
-                            continue
-                except:
-                    # If current date parsing fails, use all appointments
+
+    def generate(from_num):
+        """Inner generator function for streaming responses"""
+        global is_calling, call_results, appointments_data, current_status
+
+        is_calling = True
+        call_results = []
+        current_status = "Starting"
+
+        try:
+            # Process each person sequentially
+            for person in people_data:
+                if not appointments_data:
+                    yield json.dumps({
+                        'type': 'complete',
+                        'message': 'No more appointments available'
+                    }) + '\n'
+                    break
+
+                # Get person's current appointment date
+                current_apt_date = person.get('Extracted_Appointment_Date', '')
+
+                # Filter appointments to only include those BEFORE current appointment
+                filtered_appointments = []
+                if current_apt_date:
+                    try:
+                        current_date = pd.to_datetime(current_apt_date)
+                        for apt in appointments_data:
+                            apt_date_str = apt.get('date', '')
+                            try:
+                                apt_date = pd.to_datetime(apt_date_str)
+                                # Only include if appointment is BEFORE current appointment
+                                if apt_date < current_date:
+                                    filtered_appointments.append(apt)
+                            except:
+                                # If date parsing fails, skip this appointment
+                                continue
+                    except:
+                        # If current date parsing fails, use all appointments
+                        filtered_appointments = appointments_data[:5]
+                else:
+                    # If no current appointment date, use all appointments
                     filtered_appointments = appointments_data[:5]
-            else:
-                # If no current appointment date, use all appointments
-                filtered_appointments = appointments_data[:5]
-            
-            # Get top 5 earlier available appointments
-            available_apts = filtered_appointments[:5]
-            
-            # Skip if no earlier appointments available
-            if not available_apts:
-                person_name = f"{person.get('Patient-First', '')} {person.get('Patient-Last', '')}".strip()
-                yield json.dumps({
-                    'type': 'info',
-                    'person': person_name,
-                    'message': f'No earlier appointments available (current: {current_apt_date})'
-                }) + '\n'
-                
-                # Log as skipped
-                result = {
-                    'Patient Name': person_name,
-                    'Patient DOB': person.get('Date_of_Birth', ''),
-                    'Call Successful': False,
-                    'In Voicemail': False,
-                    'User Sentiment': '',
-                    'Appointment Confirmed': '',
-                    'Appointment Rescheduled': False,
-                    'New Appointment Date': '',
-                    'Call Summary': f'Skipped - No earlier appointments available (current: {current_apt_date})',
-                    'Detailed Call Summary': '',
-                    'To-do List': '',
-                    'Asked for DNC': False,
-                    'Recording URL': '',
-                    'Outcome': 'skipped_no_earlier_appointments'
-                }
-                call_results.append(result)
-                continue
-            
-            # Send status update
-            person_name = f"{person.get('Patient-First', '')} {person.get('Patient-Last', '')}".strip()
-            
-            yield json.dumps({
-                'type': 'calling',
-                'person': person_name,
-                'phone': person.get('phone number', person.get('Cell Phone', ''))
-            }) + '\n'
-            
-            try:
-                # Create call
-                call_response = create_phone_call(person, available_apts)
-                call_id = call_response['call_id']
-                
-                yield json.dumps({
-                    'type': 'call_created',
-                    'call_id': call_id,
-                    'person': person_name
-                }) + '\n'
-                
-                # Poll until call ends
-                call_data = poll_call_until_ended(call_id)
-                
-                if not call_data:
+
+                # Get top 5 earlier available appointments
+                available_apts = filtered_appointments[:5]
+
+                # Skip if no earlier appointments available
+                if not available_apts:
+                    person_name = f"{person.get('Patient-First', '')} {person.get('Patient-Last', '')}".strip()
+                    yield json.dumps({
+                        'type': 'info',
+                        'person': person_name,
+                        'message': f'No earlier appointments available (current: {current_apt_date})'
+                    }) + '\n'
+
+                    # Log as skipped
                     result = {
                         'Patient Name': person_name,
                         'Patient DOB': person.get('Date_of_Birth', ''),
@@ -468,80 +445,181 @@ def start_calling():
                         'Appointment Confirmed': '',
                         'Appointment Rescheduled': False,
                         'New Appointment Date': '',
-                        'Call Summary': 'Call timed out',
+                        'Call Summary': f'Skipped - No earlier appointments available (current: {current_apt_date})',
                         'Detailed Call Summary': '',
                         'To-do List': '',
                         'Asked for DNC': False,
                         'Recording URL': '',
-                        'Outcome': 'timeout'
+                        'Outcome': 'skipped_no_earlier_appointments'
                     }
-                else:
-                    # Extract analysis
-                    analysis = extract_appointment_from_analysis(call_data)
-                    
+                    call_results.append(result)
+                    continue
+
+                # Send status update
+                person_name = f"{person.get('Patient-First', '')} {person.get('Patient-Last', '')}".strip()
+                current_status = f"Calling {person_name}"
+
+                yield json.dumps({
+                    'type': 'calling',
+                    'person': person_name,
+                    'phone': person.get('phone number', person.get('Cell Phone', ''))
+                }) + '\n'
+
+                try:
+                    # Create call
+                    call_response = create_phone_call(person, available_apts, from_num)
+                    call_id = call_response['call_id']
+
+                    yield json.dumps({
+                        'type': 'call_created',
+                        'call_id': call_id,
+                        'person': person_name
+                    }) + '\n'
+
+                    # Poll until call ends
+                    call_data = poll_call_until_ended(call_id)
+
+                    if not call_data:
+                        result = {
+                            'Patient Name': person_name,
+                            'Patient DOB': person.get('Date_of_Birth', ''),
+                            'Call Successful': False,
+                            'In Voicemail': False,
+                            'User Sentiment': '',
+                            'Appointment Confirmed': '',
+                            'Appointment Rescheduled': False,
+                            'New Appointment Date': '',
+                            'Call Summary': 'Call timed out',
+                            'Detailed Call Summary': '',
+                            'To-do List': '',
+                            'Asked for DNC': False,
+                            'Recording URL': '',
+                            'Outcome': 'timeout'
+                        }
+                    else:
+                        # Extract analysis
+                        analysis = extract_appointment_from_analysis(call_data)
+
+                        result = {
+                            'Patient Name': person_name,
+                            'Patient DOB': analysis['patient_dob'] or person.get('Date_of_Birth', ''),
+                            'Call Successful': analysis['call_successful'],
+                            'In Voicemail': analysis['in_voicemail'],
+                            'User Sentiment': analysis['user_sentiment'],
+                            'Appointment Confirmed': analysis['appointment_confirmed'],
+                            'Appointment Rescheduled': analysis['appointment_rescheduled'],
+                            'New Appointment Date': analysis['new_appointment_date'] or '',
+                            'Call Summary': analysis['call_summary'],
+                            'Detailed Call Summary': analysis['detailed_call_summary'],
+                            'To-do List': analysis['to_do_list'],
+                            'Asked for DNC': analysis['asked_for_dnc'],
+                            'Recording URL': call_data.get('recording_url', ''),
+                            'Outcome': 'rescheduled' if analysis['appointment_rescheduled'] else 'no_reschedule'
+                        }
+
+                        # Remove appointment if rescheduled
+                        if analysis['appointment_rescheduled'] and analysis['new_appointment_date']:
+                            removed = find_and_remove_appointment(analysis['new_appointment_date'])
+                            if removed:
+                                result['Appointment Slot Removed'] = True
+
+                    call_results.append(result)
+
+                    yield json.dumps({
+                        'type': 'call_complete',
+                        'result': result
+                    }) + '\n'
+
+                except Exception as e:
                     result = {
                         'Patient Name': person_name,
-                        'Patient DOB': analysis['patient_dob'] or person.get('Date_of_Birth', ''),
-                        'Call Successful': analysis['call_successful'],
-                        'In Voicemail': analysis['in_voicemail'],
-                        'User Sentiment': analysis['user_sentiment'],
-                        'Appointment Confirmed': analysis['appointment_confirmed'],
-                        'Appointment Rescheduled': analysis['appointment_rescheduled'],
-                        'New Appointment Date': analysis['new_appointment_date'] or '',
-                        'Call Summary': analysis['call_summary'],
-                        'Detailed Call Summary': analysis['detailed_call_summary'],
-                        'To-do List': analysis['to_do_list'],
-                        'Asked for DNC': analysis['asked_for_dnc'],
-                        'Recording URL': call_data.get('recording_url', ''),
-                        'Outcome': 'rescheduled' if analysis['appointment_rescheduled'] else 'no_reschedule'
+                        'Patient DOB': person.get('Date_of_Birth', ''),
+                        'Call Successful': False,
+                        'In Voicemail': False,
+                        'User Sentiment': '',
+                        'Appointment Confirmed': '',
+                        'Appointment Rescheduled': False,
+                        'New Appointment Date': '',
+                        'Call Summary': f'Error: {str(e)}',
+                        'Detailed Call Summary': '',
+                        'To-do List': '',
+                        'Asked for DNC': False,
+                        'Recording URL': '',
+                        'Outcome': 'error'
                     }
-                    
-                    # Remove appointment if rescheduled
-                    if analysis['appointment_rescheduled'] and analysis['new_appointment_date']:
-                        removed = find_and_remove_appointment(analysis['new_appointment_date'])
-                        if removed:
-                            result['Appointment Slot Removed'] = True
-                
-                call_results.append(result)
-                
-                yield json.dumps({
-                    'type': 'call_complete',
-                    'result': result
-                }) + '\n'
-            
-            except Exception as e:
-                result = {
-                    'Patient Name': person_name,
-                    'Patient DOB': person.get('Date_of_Birth', ''),
-                    'Call Successful': False,
-                    'In Voicemail': False,
-                    'User Sentiment': '',
-                    'Appointment Confirmed': '',
-                    'Appointment Rescheduled': False,
-                    'New Appointment Date': '',
-                    'Call Summary': f'Error: {str(e)}',
-                    'Detailed Call Summary': '',
-                    'To-do List': '',
-                    'Asked for DNC': False,
-                    'Recording URL': '',
-                    'Outcome': 'error'
-                }
-                call_results.append(result)
-                
-                yield json.dumps({
-                    'type': 'error',
-                    'person': person_name,
-                    'error': str(e)
-                }) + '\n'
-        
-        yield json.dumps({
-            'type': 'complete',
-            'message': 'All calls completed',
-            'total_calls': len(call_results)
-        }) + '\n'
-    
-    finally:
-        is_calling = False
+                    call_results.append(result)
+
+                    yield json.dumps({
+                        'type': 'error',
+                        'person': person_name,
+                        'error': str(e)
+                    }) + '\n'
+
+            yield json.dumps({
+                'type': 'complete',
+                'message': 'All calls completed',
+                'total_calls': len(call_results)
+            }) + '\n'
+
+        finally:
+            is_calling = False
+            current_status = "Ready"
+
+    return Response(generate(from_number), mimetype='text/plain')
+
+
+@app.route('/get-call-result/<call_id>', methods=['GET'])
+def get_call_result(call_id):
+    """Get the result of a specific call (used when campaign is stopped mid-call)"""
+    global call_results
+
+    try:
+        # Poll until call ends (with shorter timeout for manual stop)
+        call_data = poll_call_until_ended(call_id, max_wait_seconds=120)
+
+        if not call_data:
+            return jsonify({
+                'success': False,
+                'error': 'Call timed out or not found'
+            }), 404
+
+        # Extract analysis
+        analysis = extract_appointment_from_analysis(call_data)
+
+        result = {
+            'Patient Name': 'Unknown (stopped mid-campaign)',
+            'Patient DOB': analysis['patient_dob'] or '',
+            'Call Successful': analysis['call_successful'],
+            'In Voicemail': analysis['in_voicemail'],
+            'User Sentiment': analysis['user_sentiment'],
+            'Appointment Confirmed': analysis['appointment_confirmed'],
+            'Appointment Rescheduled': analysis['appointment_rescheduled'],
+            'New Appointment Date': analysis['new_appointment_date'] or '',
+            'Call Summary': analysis['call_summary'],
+            'Detailed Call Summary': analysis['detailed_call_summary'],
+            'To-do List': analysis['to_do_list'],
+            'Asked for DNC': analysis['asked_for_dnc'],
+            'Recording URL': call_data.get('recording_url', ''),
+            'Outcome': 'rescheduled' if analysis['appointment_rescheduled'] else 'no_reschedule'
+        }
+
+        # Add to results if not already there
+        call_results.append(result)
+
+        # Remove appointment if rescheduled
+        if analysis['appointment_rescheduled'] and analysis['new_appointment_date']:
+            find_and_remove_appointment(analysis['new_appointment_date'])
+
+        return jsonify({
+            'success': True,
+            'result': result
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 @app.route('/download-results', methods=['GET'])
@@ -575,12 +653,49 @@ def get_status():
     """Get current system status"""
     return jsonify({
         'is_calling': is_calling,
+        'current_status': current_status,
         'people_count': len(people_data),
         'appointments_count': len(appointments_data),
+        'original_appointments_count': original_appointments_count,
+        'rescheduled_count': rescheduled_count,
         'results_count': len(call_results),
         'people_schema': people_schema,
         'appointments_schema': appointments_schema
     })
+
+
+@app.route('/phone-numbers', methods=['GET'])
+def get_phone_numbers():
+    """Fetch available phone numbers from Retell AI"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {RETELL_API_KEY}"
+        }
+
+        response = requests.get(
+            "https://api.retellai.com/list-phone-numbers",
+            headers=headers
+        )
+
+        if response.status_code != 200:
+            return jsonify({'error': f'Failed to fetch phone numbers: {response.status_code}'}), response.status_code
+
+        phone_numbers = response.json()
+
+        # Format the response for the dropdown
+        formatted_numbers = []
+        for num in phone_numbers:
+            formatted_numbers.append({
+                'phone_number': num.get('phone_number', ''),
+                'phone_number_pretty': num.get('phone_number_pretty', num.get('phone_number', '')),
+                'nickname': num.get('nickname', ''),
+                'area_code': num.get('area_code', '')
+            })
+
+        return jsonify(formatted_numbers)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
